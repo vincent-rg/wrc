@@ -42,25 +42,67 @@ wrc() {
     fi
 
     local uri="http://${server}:${port}/run"
+    local kill_uri="http://${server}:${port}/kill"
     local body
-    body=$(printf '{"command":%s}' "$(printf '%s' "$command" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')")
+    body=$(python3 -c 'import json,sys; print(json.dumps({"command": sys.argv[1]}))' "$command")
 
     printf '\033[36mWRC: Sending to %s:%s ...\033[0m\n' "$server" "$port"
 
-    local response
-    response=$(curl -sS --no-progress-meter \
+    local headers_file
+    headers_file=$(mktemp)
+
+    local exit_code=1
+    local remote_pid=""
+
+    # On Ctrl+C: send /kill then clean up
+    _wrc_kill() {
+        if [[ -n "$remote_pid" ]]; then
+            printf '\n\033[33mWRC: Sending kill for PID %s ...\033[0m\n' "$remote_pid"
+            curl -sS -X POST \
+                -H 'Content-Type: application/json' \
+                -d "{\"pid\": $remote_pid}" \
+                "$kill_uri" > /dev/null 2>&1
+        fi
+    }
+    trap '_wrc_kill' INT
+
+    # Stream the response; parse each NDJSON line as it arrives
+    local line
+    while IFS= read -r line; do
+        # Extract remote PID from response headers (available after first line)
+        if [[ -z "$remote_pid" && -f "$headers_file" ]]; then
+            remote_pid=$(grep -i '^X-WRC-PID:' "$headers_file" | tr -d '\r' | awk '{print $2}')
+        fi
+
+        local type
+        type=$(python3 -c '
+import json, sys
+d = json.loads(sys.argv[1])
+print("exit" if "exit_code" in d else d.get("stream", ""))
+' "$line" 2>/dev/null)
+
+        if [[ "$type" == "exit" ]]; then
+            exit_code=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["exit_code"])' "$line")
+        elif [[ "$type" == "stderr" ]]; then
+            printf '\033[31m%s\033[0m\n' "$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["line"])' "$line")"
+        else
+            python3 -c 'import json,sys; print(json.loads(sys.argv[1])["line"])' "$line"
+        fi
+    done < <(curl -sS --no-progress-meter --no-buffer \
         -X POST \
         -H 'Content-Type: application/json' \
         -d "$body" \
+        -D "$headers_file" \
         "$uri" 2>&1)
 
-    if [[ $? -ne 0 ]]; then
-        printf '\033[31mWRC: Connection failed - %s\033[0m\n' "$response" >&2
+    local curl_status=$?
+    rm -f "$headers_file"
+    trap - INT
+
+    if [[ $curl_status -ne 0 ]]; then
+        printf '\033[31mWRC: Connection failed\033[0m\n' >&2
         return 1
     fi
-
-    local exit_code
-    exit_code=$(printf '%s' "$response" | python3 -c 'import json,sys; print(json.load(sys.stdin)["exit_code"])')
 
     if [[ "$exit_code" -eq 0 ]]; then
         printf '\033[32mWRC: Done (exit_code=0)\033[0m\n'

@@ -22,27 +22,66 @@ function wrc {
         [int]$Port = 9000
     )
 
-    $uri = "http://${Server}:${Port}/run"
+    $uri     = "http://${Server}:${Port}/run"
+    $killUri = "http://${Server}:${Port}/kill"
     $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes(
         (ConvertTo-Json @{command = $Command} -Compress)
     )
 
     Write-Host "WRC: Sending to ${Server}:${Port} ..." -ForegroundColor Cyan
 
+    $remotePid = $null
+    $exitCode  = 1
+
     try {
-        $request = [System.Net.WebRequest]::Create($uri)
-        $request.Method = 'POST'
+        $request = [System.Net.HttpWebRequest]::Create($uri)
+        $request.Method      = 'POST'
         $request.ContentType = 'application/json'
-        $request.Timeout = -1  # No timeout - wait as long as the command runs
+        $request.Timeout     = -1  # No timeout - wait as long as the command runs
+
         $request.ContentLength = $bodyBytes.Length
+        $reqStream = $request.GetRequestStream()
+        $reqStream.Write($bodyBytes, 0, $bodyBytes.Length)
+        $reqStream.Close()
 
-        $stream = $request.GetRequestStream()
-        $stream.Write($bodyBytes, 0, $bodyBytes.Length)
-        $stream.Close()
+        $response  = $request.GetResponse()
+        $remotePid = $response.Headers['X-WRC-PID']
+        $reader    = [System.IO.StreamReader]::new($response.GetResponseStream(), [System.Text.Encoding]::UTF8)
 
-        $response = $request.GetResponse()
-        $reader = [System.IO.StreamReader]::new($response.GetResponseStream())
-        $result = $reader.ReadToEnd() | ConvertFrom-Json
+        # Register Ctrl+C handler to send /kill
+        $killBlock = {
+            if ($remotePid) {
+                Write-Host "`nWRC: Sending kill for PID $remotePid ..." -ForegroundColor Yellow
+                try {
+                    $kr = [System.Net.WebRequest]::Create($killUri)
+                    $kr.Method      = 'POST'
+                    $kr.ContentType = 'application/json'
+                    $kb = [System.Text.Encoding]::UTF8.GetBytes(("{""pid"":$remotePid}"))
+                    $kr.ContentLength = $kb.Length
+                    $ks = $kr.GetRequestStream(); $ks.Write($kb, 0, $kb.Length); $ks.Close()
+                    $kr.GetResponse().Close()
+                } catch {}
+            }
+        }
+        [Console]::TreatControlCAsInput = $false
+        $null = Register-ObjectEvent -InputObject ([Console]) -EventName CancelKeyPress -Action $killBlock -SourceIdentifier 'WRC.Kill'
+
+        # Read and print NDJSON lines as they arrive
+        while (-not $reader.EndOfStream) {
+            $line = $reader.ReadLine()
+            if (-not $line) { continue }
+
+            $obj = $line | ConvertFrom-Json
+
+            if ($null -ne $obj.exit_code) {
+                $exitCode = $obj.exit_code
+            } elseif ($obj.stream -eq 'stderr') {
+                Write-Host $obj.line -ForegroundColor Red
+            } else {
+                Write-Host $obj.line
+            }
+        }
+
         $reader.Close()
         $response.Close()
     }
@@ -50,14 +89,17 @@ function wrc {
         Write-Host "WRC: Connection failed - $_" -ForegroundColor Red
         return 1
     }
-
-    if ($result.exit_code -eq 0) {
-        Write-Host "WRC: Done (exit_code=0)" -ForegroundColor Green
-    } else {
-        Write-Host "WRC: Done (exit_code=$($result.exit_code))" -ForegroundColor Red
+    finally {
+        Unregister-Event -SourceIdentifier 'WRC.Kill' -ErrorAction SilentlyContinue
     }
 
-    return $result.exit_code
+    if ($exitCode -eq 0) {
+        Write-Host "WRC: Done (exit_code=0)" -ForegroundColor Green
+    } else {
+        Write-Host "WRC: Done (exit_code=$exitCode)" -ForegroundColor Red
+    }
+
+    return $exitCode
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
