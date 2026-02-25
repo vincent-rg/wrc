@@ -34,17 +34,33 @@ function wrc {
     $exitCode  = 1
 
     try {
-        $request = [System.Net.HttpWebRequest]::Create($uri)
-        $request.Method      = 'POST'
-        $request.ContentType = 'application/json'
-        $request.Timeout     = -1  # No timeout - wait as long as the command runs
+        # Connect with retries
+        $response   = $null
+        $maxRetries = 10
+        for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
+            try {
+                $request = [System.Net.HttpWebRequest]::Create($uri)
+                $request.Method      = 'POST'
+                $request.ContentType = 'application/json'
+                $request.Timeout     = -1  # No timeout - wait as long as the command runs
 
-        $request.ContentLength = $bodyBytes.Length
-        $reqStream = $request.GetRequestStream()
-        $reqStream.Write($bodyBytes, 0, $bodyBytes.Length)
-        $reqStream.Close()
+                $request.ContentLength = $bodyBytes.Length
+                $reqStream = $request.GetRequestStream()
+                $reqStream.Write($bodyBytes, 0, $bodyBytes.Length)
+                $reqStream.Close()
 
-        $response  = $request.GetResponse()
+                $response = $request.GetResponse()
+                break
+            } catch {
+                if ($attempt -lt $maxRetries) {
+                    Write-Host "WRC: Attempt $attempt/$maxRetries failed, retrying in 1s..." -ForegroundColor Yellow
+                    Start-Sleep -Seconds 1
+                } else {
+                    throw
+                }
+            }
+        }
+
         $remotePid = $response.Headers['X-WRC-PID']
         $reader    = [System.IO.StreamReader]::new($response.GetResponseStream(), [System.Text.Encoding]::UTF8)
 
