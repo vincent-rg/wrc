@@ -26,7 +26,6 @@ function wrc {
     )
 
     $uri     = "http://${Server}:${Port}/run"
-    $killUri = "http://${Server}:${Port}/kill"
     $bodyObj = @{command = $Command}
     if ($WorkDir -ne "") { $bodyObj.workdir = $WorkDir }
     $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes(
@@ -35,8 +34,7 @@ function wrc {
 
     Write-Host "WRC: Sending to ${Server}:${Port} ..." -ForegroundColor Cyan
 
-    $remotePid = $null
-    $exitCode  = 1
+    $exitCode = 1
 
     try {
         # Connect with retries
@@ -66,52 +64,15 @@ function wrc {
             }
         }
 
-        $remotePid = $response.Headers['X-WRC-PID']
-        $reader    = [System.IO.StreamReader]::new($response.GetResponseStream(), [System.Text.Encoding]::UTF8)
-
-        # Register Ctrl+C handler to send /kill
-        $killBlock = {
-            if ($remotePid) {
-                Write-Host "`nWRC: Sending kill for PID $remotePid ..." -ForegroundColor Yellow
-                try {
-                    $kr = [System.Net.WebRequest]::Create($killUri)
-                    $kr.Method      = 'POST'
-                    $kr.ContentType = 'application/json'
-                    $kb = [System.Text.Encoding]::UTF8.GetBytes(("{""pid"":$remotePid}"))
-                    $kr.ContentLength = $kb.Length
-                    $ks = $kr.GetRequestStream(); $ks.Write($kb, 0, $kb.Length); $ks.Close()
-                    $kr.GetResponse().Close()
-                } catch {}
-            }
-        }
-        [Console]::TreatControlCAsInput = $false
-        $null = Register-ObjectEvent -InputObject ([Console]) -EventName CancelKeyPress -Action $killBlock -SourceIdentifier 'WRC.Kill'
-
-        # Read and print NDJSON lines as they arrive
-        while (-not $reader.EndOfStream) {
-            $line = $reader.ReadLine()
-            if (-not $line) { continue }
-
-            $obj = $line | ConvertFrom-Json
-
-            if ($null -ne $obj.exit_code) {
-                $exitCode = $obj.exit_code
-            } elseif ($obj.stream -eq 'stderr') {
-                Write-Host $obj.line -ForegroundColor Red
-            } else {
-                [Console]::WriteLine($obj.line)
-            }
-        }
-
+        $reader = [System.IO.StreamReader]::new($response.GetResponseStream(), [System.Text.Encoding]::UTF8)
+        $obj    = $reader.ReadToEnd() | ConvertFrom-Json
+        $exitCode = $obj.exit_code
         $reader.Close()
         $response.Close()
     }
     catch {
         Write-Host "WRC: Connection failed - $_" -ForegroundColor Red
         return 1
-    }
-    finally {
-        Unregister-Event -SourceIdentifier 'WRC.Kill' -ErrorAction SilentlyContinue
     }
 
     if ($exitCode -eq 0) {

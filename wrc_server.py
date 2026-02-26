@@ -10,13 +10,9 @@ Usage: python wrc_server.py [port]
 
 Endpoints:
   POST /run   { "command": "<cmd>", "workdir": "<path>" }
-              Runs the command and streams output line by line.
+              Runs the command; output appears on the server console.
               workdir is optional; omit to use the server's cwd.
-              Each chunk is a JSON line: {"line": "...", "stream": "stdout"|"stderr"}
-              Final chunk:              {"exit_code": <int>}
-
-  POST /kill  { "pid": <int> }
-              Terminates the process with the given PID.
+              Response: {"exit_code": <int>}
 """
 
 import json
@@ -31,9 +27,6 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 # Isolate child from the server's Ctrl+C console event
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 
-_procs = {}          # pid -> Popen, for /kill
-_procs_lock = threading.Lock()
-
 
 def get_outbound_ip():
     """Return the IP of the interface used to reach the outside network."""
@@ -47,30 +40,23 @@ def get_outbound_ip():
         return socket.gethostbyname(socket.gethostname())
 
 
-def _write_chunk(wfile, data: bytes):
-    """Write one HTTP chunked transfer chunk."""
-    wfile.write(f'{len(data):X}\r\n'.encode())
-    wfile.write(data)
-    wfile.write(b'\r\n')
-    wfile.flush()
-
-
-def _write_line(wfile, obj: dict):
-    _write_chunk(wfile, (json.dumps(obj, ensure_ascii=False) + '\n').encode('utf-8'))
+def _json_response(handler, status, obj):
+    body = json.dumps(obj, ensure_ascii=False).encode('utf-8')
+    handler.send_response(status)
+    handler.send_header('Content-Type', 'application/json')
+    handler.send_header('Content-Length', str(len(body)))
+    handler.send_header('Connection', 'close')
+    handler.end_headers()
+    handler.wfile.write(body)
 
 
 class CommandHandler(BaseHTTPRequestHandler):
-    # HTTP/1.1 is required for Transfer-Encoding: chunked
-    protocol_version = 'HTTP/1.1'
-
     def do_POST(self):
         length = int(self.headers.get('Content-Length', 0))
         data = json.loads(self.rfile.read(length))
 
         if self.path == '/run':
             self._handle_run(data)
-        elif self.path == '/kill':
-            self._handle_kill(data)
         else:
             self.send_error(404)
 
@@ -80,8 +66,6 @@ class CommandHandler(BaseHTTPRequestHandler):
 
         # Write command to a temp .ps1 file so that 'exit N' propagates to the
         # process exit code.  Using & { } script-block would swallow exit codes.
-        # - [Console]::OutputEncoding forces UTF-8 on the pipe
-        # - 6>&1 merges Write-Host (stream 6) into stdout
         fd, tmp_path = tempfile.mkstemp(suffix='.ps1')
         try:
             with os.fdopen(fd, 'w', encoding='utf-8') as f:
@@ -90,50 +74,13 @@ class CommandHandler(BaseHTTPRequestHandler):
             os.unlink(tmp_path)
             raise
 
-        ps_command = (
-            '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; '
-            f'& "{tmp_path}" 6>&1'
-        )
-
         print(f'[WRC] Running: {raw_command}' + (f' (cwd={workdir})' if workdir else ''))
 
         proc = subprocess.Popen(
-            ['powershell.exe', '-NoProfile', '-Command', ps_command],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            ['powershell.exe', '-NoProfile', '-File', tmp_path],
             creationflags=CREATE_NEW_PROCESS_GROUP,
             cwd=workdir,
         )
-
-        with _procs_lock:
-            _procs[proc.pid] = proc
-
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/x-ndjson')
-        self.send_header('Transfer-Encoding', 'chunked')
-        self.send_header('Connection', 'close')
-        self.send_header('X-WRC-PID', str(proc.pid))
-        self.end_headers()
-
-        # Stream stdout and stderr concurrently into the response.
-        # Lock ensures the two threads don't interleave chunk writes.
-        wfile_lock = threading.Lock()
-
-        def stream(pipe, stream_name):
-            try:
-                for raw in pipe:
-                    line = raw.decode('utf-8', errors='replace').rstrip('\r\n')
-                    with wfile_lock:
-                        _write_line(self.wfile, {'line': line, 'stream': stream_name})
-            except Exception:
-                pass
-
-        t_out = threading.Thread(target=stream, args=(proc.stdout, 'stdout'), daemon=True)
-        t_err = threading.Thread(target=stream, args=(proc.stderr, 'stderr'), daemon=True)
-        t_out.start()
-        t_err.start()
-        t_out.join()
-        t_err.join()
 
         exit_code = proc.wait()
 
@@ -142,36 +89,8 @@ class CommandHandler(BaseHTTPRequestHandler):
         except OSError:
             pass
 
-        with _procs_lock:
-            _procs.pop(proc.pid, None)
-
         print(f'[WRC] Done (exit_code={exit_code})')
-
-        _write_line(self.wfile, {'exit_code': exit_code})
-        _write_chunk(self.wfile, b'')  # final empty chunk = end of stream
-
-    def _handle_kill(self, data):
-        pid = data.get('pid')
-        with _procs_lock:
-            proc = _procs.get(pid)
-
-        if proc is None:
-            body = json.dumps({'error': 'pid not found'}).encode('utf-8')
-            self.send_response(404)
-        else:
-            try:
-                proc.terminate()
-                status = 'terminated'
-            except Exception as e:
-                status = f'error: {e}'
-            body = json.dumps({'status': status, 'pid': pid}).encode('utf-8')
-            self.send_response(200)
-
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('Content-Length', str(len(body)))
-        self.send_header('Connection', 'close')
-        self.end_headers()
-        self.wfile.write(body)
+        _json_response(self, 200, {'exit_code': exit_code})
 
     def log_message(self, format, *args):
         pass  # suppress default HTTP access log
