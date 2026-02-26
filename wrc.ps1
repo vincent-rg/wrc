@@ -1,15 +1,16 @@
 # wrc.ps1 - Remote command launcher client
 #
 # Usage:
-#   Direct execution: .\wrc.ps1 -Command <cmd> -Server <ip> [-Port <port>]
+#   Direct execution: .\wrc.ps1 -Command <cmd> -Server <ip> [-Port <port>] [-WorkDir <dir>]
 #
 #   Source and use:   . .\wrc.ps1
-#                     wrc -Command <cmd> -Server <ip> [-Port <port>]
+#                     wrc -Command <cmd> -Server <ip> [-Port <port>] [-WorkDir <dir>]
 #
 # Options:
 #   -Command  : Command to execute inside WSB
 #   -Server   : IP address of the WRC server (wrc_server.py) running in WSB
 #   -Port     : Server port (default: 9000)
+#   -WorkDir  : Working directory on the server (default: server's cwd)
 
 function wrc {
     param(
@@ -19,13 +20,17 @@ function wrc {
         [Parameter(Mandatory=$true)]
         [string]$Server,
 
-        [int]$Port = 9000
+        [int]$Port = 9000,
+
+        [string]$WorkDir = ""
     )
 
     $uri     = "http://${Server}:${Port}/run"
     $killUri = "http://${Server}:${Port}/kill"
+    $bodyObj = @{command = $Command}
+    if ($WorkDir -ne "") { $bodyObj.workdir = $WorkDir }
     $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes(
-        (ConvertTo-Json @{command = $Command} -Compress)
+        (ConvertTo-Json $bodyObj -Compress)
     )
 
     Write-Host "WRC: Sending to ${Server}:${Port} ..." -ForegroundColor Cyan
@@ -124,16 +129,17 @@ if ($MyInvocation.InvocationName -ne '.') {
         exit $exitCode
     } else {
         Write-Host "WRC - Remote Command Launcher" -ForegroundColor Green
-        Write-Host "Usage: .\wrc.ps1 -Command <cmd> -Server <ip> [-Port <port>]" -ForegroundColor Yellow
+        Write-Host "Usage: .\wrc.ps1 -Command <cmd> -Server <ip> [-Port <port>] [-WorkDir <dir>]" -ForegroundColor Yellow
         Write-Host ""
         Write-Host "Options:" -ForegroundColor Cyan
         Write-Host "  -Command  : Command to execute inside WSB" -ForegroundColor Gray
         Write-Host "  -Server   : IP address of wrc_server.py running in WSB" -ForegroundColor Gray
         Write-Host "  -Port     : Server port (default: 9000)" -ForegroundColor Gray
+        Write-Host "  -WorkDir  : Working directory on the server (default: server's cwd)" -ForegroundColor Gray
         Write-Host ""
         Write-Host "To use as a function, source this script:" -ForegroundColor Cyan
         Write-Host "   . .\wrc.ps1" -ForegroundColor White
-        Write-Host "Then call: wrc -Command <cmd> -Server <ip> [-Port <port>]" -ForegroundColor White
+        Write-Host "Then call: wrc -Command <cmd> -Server <ip> [-Port <port>] [-WorkDir <dir>]" -ForegroundColor White
     }
 }
 # When sourced: load silently

@@ -9,8 +9,9 @@ Usage: python wrc_server.py [port]
   port : Port to listen on (default: 9000)
 
 Endpoints:
-  POST /run   { "command": "<cmd>" }
+  POST /run   { "command": "<cmd>", "workdir": "<path>" }
               Runs the command and streams output line by line.
+              workdir is optional; omit to use the server's cwd.
               Each chunk is a JSON line: {"line": "...", "stream": "stdout"|"stderr"}
               Final chunk:              {"exit_code": <int>}
 
@@ -73,6 +74,7 @@ class CommandHandler(BaseHTTPRequestHandler):
 
     def _handle_run(self, data):
         raw_command = data['command']
+        workdir = data.get('workdir') or None
         # - [Console]::OutputEncoding forces UTF-8 on the pipe
         # - 6>&1 merges Write-Host (stream 6) into stdout
         ps_command = (
@@ -80,13 +82,14 @@ class CommandHandler(BaseHTTPRequestHandler):
             f'& {{ {raw_command} }} 6>&1'
         )
 
-        print(f'[WRC] Running: {raw_command}')
+        print(f'[WRC] Running: {raw_command}' + (f' (cwd={workdir})' if workdir else ''))
 
         proc = subprocess.Popen(
             ['powershell.exe', '-NoProfile', '-Command', ps_command],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             creationflags=CREATE_NEW_PROCESS_GROUP,
+            cwd=workdir,
         )
 
         with _procs_lock:

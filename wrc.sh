@@ -2,49 +2,57 @@
 # wrc.sh - Remote command launcher client (Linux)
 #
 # Usage:
-#   Direct execution: ./wrc.sh -c <cmd> -s <ip> [-p <port>]
+#   Direct execution: ./wrc.sh -c <cmd> -s <ip> [-p <port>] [-d <dir>]
 #
 #   Source and use:   source ./wrc.sh
-#                     wrc -c <cmd> -s <ip> [-p <port>]
+#                     wrc -c <cmd> -s <ip> [-p <port>] [-d <dir>]
 #
 # Options:
-#   -c, --command : Command to execute on the WRC server
-#   -s, --server  : IP address of the WRC server (wrc_server.py)
-#   -p, --port    : Server port (default: 9000)
+#   -c, --command   : Command to execute on the WRC server
+#   -s, --server    : IP address of the WRC server (wrc_server.py)
+#   -p, --port      : Server port (default: 9000)
+#   -d, --directory : Working directory on the server (default: server's cwd)
 
 wrc() {
     local command=""
     local server=""
     local port=9000
+    local workdir=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -c|--command) command="$2"; shift 2 ;;
-            -s|--server)  server="$2";  shift 2 ;;
-            -p|--port)    port="$2";    shift 2 ;;
+            -c|--command)   command="$2";  shift 2 ;;
+            -s|--server)    server="$2";   shift 2 ;;
+            -p|--port)      port="$2";     shift 2 ;;
+            -d|--directory) workdir="$2";  shift 2 ;;
             *) echo "WRC: Unknown option: $1" >&2; return 1 ;;
         esac
     done
 
     if [[ -z "$command" || -z "$server" ]]; then
         echo "WRC - Remote Command Launcher"
-        echo "Usage: ./wrc.sh -c <cmd> -s <ip> [-p <port>]"
+        echo "Usage: ./wrc.sh -c <cmd> -s <ip> [-p <port>] [-d <dir>]"
         echo ""
         echo "Options:"
-        echo "  -c, --command : Command to execute on the WRC server"
-        echo "  -s, --server  : IP address of wrc_server.py"
-        echo "  -p, --port    : Server port (default: 9000)"
+        echo "  -c, --command   : Command to execute on the WRC server"
+        echo "  -s, --server    : IP address of wrc_server.py"
+        echo "  -p, --port      : Server port (default: 9000)"
+        echo "  -d, --directory : Working directory on the server (default: server's cwd)"
         echo ""
         echo "To use as a function, source this script:"
         echo "   source ./wrc.sh"
-        echo "Then call: wrc -c <cmd> -s <ip> [-p <port>]"
+        echo "Then call: wrc -c <cmd> -s <ip> [-p <port>] [-d <dir>]"
         return 1
     fi
 
     local uri="http://${server}:${port}/run"
     local kill_uri="http://${server}:${port}/kill"
     local body
-    body=$(python3 -c 'import json,sys; print(json.dumps({"command": sys.argv[1]}))' "$command")
+    if [[ -n "$workdir" ]]; then
+        body=$(python3 -c 'import json,sys; print(json.dumps({"command": sys.argv[1], "workdir": sys.argv[2]}))' "$command" "$workdir")
+    else
+        body=$(python3 -c 'import json,sys; print(json.dumps({"command": sys.argv[1]}))' "$command")
+    fi
 
     printf '\033[36mWRC: Sending to %s:%s ...\033[0m\n' "$server" "$port"
 
