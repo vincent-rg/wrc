@@ -46,7 +46,6 @@ wrc() {
     fi
 
     local uri="http://${server}:${port}/run"
-    local kill_uri="http://${server}:${port}/kill"
     local body
     if [[ -n "$workdir" ]]; then
         body=$(python3 -c 'import json,sys; print(json.dumps({"command": sys.argv[1], "workdir": sys.argv[2]}))' "$command" "$workdir")
@@ -56,58 +55,19 @@ wrc() {
 
     printf '\033[36mWRC: Sending to %s:%s ...\033[0m\n' "$server" "$port"
 
-    local headers_file
-    headers_file=$(mktemp)
-
-    local exit_code=1
-    local remote_pid=""
-
-    # On Ctrl+C: send /kill then clean up
-    _wrc_kill() {
-        if [[ -n "$remote_pid" ]]; then
-            printf '\n\033[33mWRC: Sending kill for PID %s ...\033[0m\n' "$remote_pid"
-            curl -sS -X POST \
-                -H 'Content-Type: application/json' \
-                -d "{\"pid\": $remote_pid}" \
-                "$kill_uri" > /dev/null 2>&1
-        fi
-    }
-    trap '_wrc_kill' INT
-
-    # Stream the response; parse each NDJSON line as it arrives
-    local line parsed type value
-    while IFS= read -r line; do
-        # Extract remote PID from response headers (available after first line)
-        if [[ -z "$remote_pid" && -f "$headers_file" ]]; then
-            remote_pid=$(grep -i '^X-WRC-PID:' "$headers_file" | tr -d '\r' | awk '{print $2}')
-        fi
-
-        parsed=$(printf '%s' "$line" | jq -r 'if has("exit_code") then "exit\t\(.exit_code)" elif .stream == "stderr" then "stderr\t\(.line)" else "stdout\t\(.line)" end')
-        type="${parsed%%$'\t'*}"
-        value="${parsed#*$'\t'}"
-
-        if [[ "$type" == "exit" ]]; then
-            exit_code="$value"
-        elif [[ "$type" == "stderr" ]]; then
-            printf '\033[31m%s\033[0m\n' "$value"
-        else
-            printf '%s\n' "$value"
-        fi
-    done < <(curl -sS --no-progress-meter --no-buffer \
-        -X POST \
+    local response
+    response=$(curl -sS -X POST \
         -H 'Content-Type: application/json' \
         -d "$body" \
-        -D "$headers_file" \
-        "$uri" 2>&1)
+        "$uri")
 
-    local curl_status=$?
-    rm -f "$headers_file"
-    trap - INT
-
-    if [[ $curl_status -ne 0 ]]; then
+    if [[ $? -ne 0 ]]; then
         printf '\033[31mWRC: Connection failed\033[0m\n' >&2
         return 1
     fi
+
+    local exit_code
+    exit_code=$(printf '%s' "$response" | jq -r '.exit_code')
 
     if [[ "$exit_code" -eq 0 ]]; then
         printf '\033[32mWRC: Done (exit_code=0)\033[0m\n'
