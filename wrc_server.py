@@ -20,9 +20,11 @@ Endpoints:
 """
 
 import json
+import os
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
@@ -75,11 +77,22 @@ class CommandHandler(BaseHTTPRequestHandler):
     def _handle_run(self, data):
         raw_command = data['command']
         workdir = data.get('workdir') or None
+
+        # Write command to a temp .ps1 file so that 'exit N' propagates to the
+        # process exit code.  Using & { } script-block would swallow exit codes.
         # - [Console]::OutputEncoding forces UTF-8 on the pipe
         # - 6>&1 merges Write-Host (stream 6) into stdout
+        fd, tmp_path = tempfile.mkstemp(suffix='.ps1')
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                f.write(raw_command)
+        except Exception:
+            os.unlink(tmp_path)
+            raise
+
         ps_command = (
             '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; '
-            f'& {{ {raw_command} }} 6>&1'
+            f'& "{tmp_path}" 6>&1'
         )
 
         print(f'[WRC] Running: {raw_command}' + (f' (cwd={workdir})' if workdir else ''))
@@ -123,6 +136,11 @@ class CommandHandler(BaseHTTPRequestHandler):
         t_err.join()
 
         exit_code = proc.wait()
+
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
 
         with _procs_lock:
             _procs.pop(proc.pid, None)
