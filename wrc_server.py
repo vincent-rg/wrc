@@ -16,11 +16,9 @@ Endpoints:
 """
 
 import json
-import os
 import socket
 import subprocess
 import sys
-import tempfile
 import threading
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
@@ -64,30 +62,15 @@ class CommandHandler(BaseHTTPRequestHandler):
         raw_command = data['command']
         workdir = data.get('workdir') or None
 
-        # Write command to a temp .ps1 file so that 'exit N' propagates to the
-        # process exit code.  Using & { } script-block would swallow exit codes.
-        fd, tmp_path = tempfile.mkstemp(suffix='.ps1')
-        try:
-            with os.fdopen(fd, 'w', encoding='utf-8') as f:
-                f.write(raw_command)
-        except Exception:
-            os.unlink(tmp_path)
-            raise
-
         print(f'[WRC] Running: {raw_command}' + (f' (cwd={workdir})' if workdir else ''))
 
         proc = subprocess.Popen(
-            ['powershell.exe', '-NoProfile', '-File', tmp_path],
+            ['powershell.exe', '-NoProfile', '-Command', raw_command],
             creationflags=CREATE_NEW_PROCESS_GROUP,
             cwd=workdir,
         )
 
         exit_code = proc.wait()
-
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
 
         print(f'[WRC] Done (exit_code={exit_code})')
         _json_response(self, 200, {'exit_code': exit_code})
