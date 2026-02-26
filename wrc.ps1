@@ -99,7 +99,7 @@ function wrc {
             } elseif ($obj.stream -eq 'stderr') {
                 Write-Host $obj.line -ForegroundColor Red
             } else {
-                Write-Host $obj.line
+                [Console]::WriteLine($obj.line)
             }
         }
 

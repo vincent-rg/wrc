@@ -75,26 +75,23 @@ wrc() {
     trap '_wrc_kill' INT
 
     # Stream the response; parse each NDJSON line as it arrives
-    local line
+    local line parsed type value
     while IFS= read -r line; do
         # Extract remote PID from response headers (available after first line)
         if [[ -z "$remote_pid" && -f "$headers_file" ]]; then
             remote_pid=$(grep -i '^X-WRC-PID:' "$headers_file" | tr -d '\r' | awk '{print $2}')
         fi
 
-        local type
-        type=$(python3 -c '
-import json, sys
-d = json.loads(sys.argv[1])
-print("exit" if "exit_code" in d else d.get("stream", ""))
-' "$line" 2>/dev/null)
+        parsed=$(printf '%s' "$line" | jq -r 'if has("exit_code") then "exit\t\(.exit_code)" elif .stream == "stderr" then "stderr\t\(.line)" else "stdout\t\(.line)" end')
+        type="${parsed%%$'\t'*}"
+        value="${parsed#*$'\t'}"
 
         if [[ "$type" == "exit" ]]; then
-            exit_code=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["exit_code"])' "$line")
+            exit_code="$value"
         elif [[ "$type" == "stderr" ]]; then
-            printf '\033[31m%s\033[0m\n' "$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["line"])' "$line")"
+            printf '\033[31m%s\033[0m\n' "$value"
         else
-            python3 -c 'import json,sys; print(json.loads(sys.argv[1])["line"])' "$line"
+            printf '%s\n' "$value"
         fi
     done < <(curl -sS --no-progress-meter --no-buffer \
         -X POST \
