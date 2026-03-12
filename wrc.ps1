@@ -20,6 +20,8 @@ function wrc {
         [Parameter(Mandatory=$true)]
         [string]$Server,
 
+        [switch]$Silent = $false,
+
         [int]$Port = 9000,
 
         [string]$WorkDir = ""
@@ -32,8 +34,10 @@ function wrc {
         (ConvertTo-Json $bodyObj -Compress)
     )
 
-    Write-Host "WRC: Sending to ${Server}:${Port} ..." -ForegroundColor Cyan
-
+    if(-not($Silent)) {
+        Write-Host "WRC: Sending to ${Server}:${Port} ..." -ForegroundColor Cyan
+    }
+    
     $exitCode = 1
 
     try {
@@ -75,10 +79,13 @@ function wrc {
         return 1
     }
 
-    if ($exitCode -eq 0) {
-        Write-Host "WRC: Done (exit_code=0)" -ForegroundColor Green
-    } else {
-        Write-Host "WRC: Done (exit_code=$exitCode)" -ForegroundColor Red
+    if(-not($Silent))
+    {
+        if ($exitCode -eq 0) {
+            Write-Host "WRC: Done (exit_code=0)" -ForegroundColor Green
+        } else {
+            Write-Host "WRC: Done (exit_code=$exitCode)" -ForegroundColor Red
+        }
     }
 
     return $exitCode
